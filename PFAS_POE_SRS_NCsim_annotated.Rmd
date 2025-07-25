@@ -48,6 +48,7 @@ We first define the number of samples (infants) and isoforms to be simulated.
 set.seed(42)
 n_samples <- 100
 n_isoforms <- 100
+simulation_scenario <- "null"
 ```
 
 Here we simulate fetal sex, maternal PFAS exposure levels, and a latent confounder that is correlated with PFAS.
@@ -96,10 +97,17 @@ mediated_isoforms <- sample(1:n_isoforms, size = n_isoforms * 0.5)
 
 # PFAS influences imprinting in these isoforms
 for (i in mediated_isoforms) {
-  effect <- scale(PFAS) * rnorm(1, mean = 0.05, sd = 0.01)
+  effect_mean <- 0.05 # Original mean effect
+  if (simulation_scenario == "null") {
+    effect_mean <- 0 # Set mean effect to 0 for null scenario
+  }
+  effect <- scale(PFAS) * rnorm(1, mean = effect_mean, sd = 0.01) # Use the adjusted mean
   expr_ratios[, i] <- expr_ratios[, i] + effect
+
+  # Clamp values to ensure they stay within [0,1]
   expr_ratios[, i] <- pmax(0, pmin(1, expr_ratios[, i])) 
 }
+
 hist(expr_ratios, main = "Parental-origin expression ratios with PFAS association", xlab = "Ratio M:M+P")
 ```
 
@@ -107,9 +115,14 @@ hist(expr_ratios, main = "Parental-origin expression ratios with PFAS associatio
 
 ```{r simulate_srs}
 # Create SRS score from expression of mediated isoforms + confounder + noise
+srs_effect_mean <- 2 # Original mean effect
+if (simulation_scenario == "null") {
+  srs_effect_mean <- 0 # Set mean effect to 0 for null scenario
+}
 SRS_contrib <- rowSums(scale(expr_ratios[, mediated_isoforms]) %*%
-                        matrix(rnorm(length(mediated_isoforms), mean = 2, sd = 0.5), ncol = 1))
+                        matrix(rnorm(length(mediated_isoforms), mean = srs_effect_mean, sd = 0.5), ncol = 1)) # Use the adjusted mean
 SRS <- scale(SRS_contrib + scale(U) * 0.5 + rnorm(n_samples, 0, 1))
+
 hist(SRS, main = "Simulated SRS", xlab = "SRS")
 ```
 
@@ -725,3 +738,116 @@ direct_adj_table <- data.frame(
 
 kable(direct_adj_table, caption = "Summary of Direct Adjustment Results (Huang, 2021 Approach)")
 ```
+
+
+# Calculate Type I Error Rates
+
+```{r calc_type1_error}
+# For a null simulation, we expect these rates to be close to 0.05 (your alpha level)
+# for true null effects, indicating correct Type I error control.
+# Rates significantly above 0.05 suggest inflated Type I error.
+
+type1_error_results <- list()
+
+# 1. SEM Type I Error
+# Focusing on the mediation paths (a1, b1) and indirect effects (ind_female, ind_male)
+# which are set to null in the simulation scenario.
+sem_type1 <- sem_pval_df %>%
+  filter(path %in% c("a1", "b1", "ind_female", "ind_male")) %>%
+  group_by(path) %>%
+  summarise(
+    Type1_Error_Rate = mean(pval < 0.05, na.rm = TRUE),
+    .groups = "drop"
+  )
+type1_error_results$SEM <- sem_type1
+
+# 2. COCA Type I Error
+# For COCA, 'significant' is determined by whether the 95% CI for the PFAS effect excludes 0.
+# For other terms (fetal_sex, SRS:fetal_sex interaction), we use a p-value threshold.
+coca_type1 <- coca_df %>%
+  summarise(
+    Type1_Error_Rate_PFAS = mean(significant, na.rm = TRUE), # Uses the 'significant' flag from CI
+    Type1_Error_Rate_fetal_sex = mean(pval_fetal_sex < 0.05, na.rm = TRUE),
+    Type1_Error_Rate_SRS_fetal_sex_int = mean(pval_PFAS_fetal_sex < 0.05, na.rm = TRUE) # This is for the SRS:fetal_sex interaction in the COCA model
+  ) %>%
+  pivot_longer(everything(), names_to = "path", values_to = "Type1_Error_Rate") %>%
+  mutate(path = gsub("Type1_Error_Rate_", "", path))
+type1_error_results$COCA <- coca_type1
+
+# 3. PGC Type I Error
+# For PGC, 'significant' for PFAS is also based on CI exclusion of 0.
+# For other terms (fetal_sex, PFAS:fetal_sex interaction), p-value threshold is used.
+pgc_type1 <- pgc_df %>%
+  summarise(
+    Type1_Error_Rate_PFAS = mean(significant, na.rm = TRUE), # Uses the 'significant' flag from CI
+    Type1_Error_Rate_fetal_sex = mean(pval_fetal_sex < 0.05, na.rm = TRUE),
+    Type1_Error_Rate_PFAS_fetal_sex_int = mean(pval_PFAS_fetal_sex < 0.05, na.rm = TRUE) # This is for the PFAS:fetal_sex interaction in the PGC model
+  ) %>%
+  pivot_longer(everything(), names_to = "path", values_to = "Type1_Error_Rate") %>%
+  mutate(path = gsub("Type1_Error_Rate_", "", path))
+type1_error_results$PGC <- pgc_type1
+
+# 4. Regression Adjustment Type I Error
+# 'sig_ci_*' flags are based on CI excluding 0.
+adj_type1 <- adjusted_lm_results %>%
+  summarise(
+    Type1_Error_Rate_expr = mean(sig_ci_expr, na.rm = TRUE),
+    Type1_Error_Rate_sex = mean(sig_ci_sex, na.rm = TRUE),
+    Type1_Error_Rate_expr_fetal_sex_int = mean(sig_ci_interaction, na.rm = TRUE) # This is for the expr:fetal_sex interaction in the direct adjustment model
+  ) %>%
+  pivot_longer(everything(), names_to = "path", values_to = "Type1_Error_Rate") %>%
+  mutate(path = gsub("Type1_Error_Rate_", "", path))
+type1_error_results$DirectAdj <- adj_type1
+```
+
+```{r print_type1_error, echo=F}
+# Combine all tibbles into a single data frame
+combined_type1_errors <- bind_rows(
+  type1_error_results$SEM %>% mutate(Method = "SEM"),
+  type1_error_results$COCA %>% mutate(Method = "COCA"),
+  type1_error_results$PGC %>% mutate(Method = "PGC"),
+  type1_error_results$DirectAdj %>% mutate(Method = "Direct Adjustment")
+) %>%
+  # Optionally reorder columns for better presentation
+  select(Method, path, Type1_Error_Rate) %>%
+  # Optionally rename paths for clarity if desired (e.g., "a1" to "PFAS -> Expression")
+  mutate(
+    path = case_when(
+      path == "a1" ~ "PFAS -> Expression (a1)",
+      path == "b1" ~ "Expression -> SRS (b1)",
+      path == "ind_female" ~ "Indirect Effect (Female)",
+      path == "ind_male" ~ "Indirect Effect (Male)",
+      path == "PFAS" ~ "PFAS Main Effect",
+      path == "fetal_sex" ~ "Fetal Sex Main Effect",
+      path == "SRS_fetal_sex_int" ~ "SRS:Fetal Sex Interaction",
+      path == "PFAS_fetal_sex_int" ~ "PFAS:Fetal Sex Interaction",
+      path == "expr" ~ "Expression Main Effect",
+      path == "sex" ~ "Sex Main Effect",
+      path == "expr_fetal_sex_int" ~ "Expression:Fetal Sex Interaction",
+      TRUE ~ path # Keep others as is
+    )
+  )
+
+# Print the combined table using kable
+kable(combined_type1_errors, 
+      caption = "Type I Error Rates Across Different Methods and Causal Paths (Null Simulation)",
+      digits = 3) # Format numbers to 3 decimal places for readability
+```
+
+#### Interpretation of Overall Type 1 Error Rates by Method
+
+##### SEM
+
+SEM shows significant inflation of Type I error for the direct mediation paths (a1 and b1), which are the building blocks of the mediation. The indirect effects, while still showing some inflation, are closer to the nominal level. This suggests that the underlying model assumptions or the sample size might be contributing to issues with accurately estimating and testing these specific direct paths under the null.
+
+##### COCA
+
+COCA exhibits an extremely high Type I error rate for the primary effect it estimates (PFAS), making its results highly unreliable under the null. This warrants a close examination of the COCA implementation or its underlying assumptions for this particular simulation.
+
+##### PGC
+
+PGC, similar to COCA, severely inflates the Type I error for the PFAS main effect, raising concerns about its reliability in detecting null effects in this simulation context.
+
+##### Direct Adjustment
+
+The direct adjustment method demonstrates relatively better control of Type I error compared to SEM, COCA, and PGC for the effects it estimates. While there's a slight inflation for the expression main effect, it's much closer to the nominal alpha level. This suggests it might be a more conservative but reliable approach under the simulated conditions for Type I error control.
