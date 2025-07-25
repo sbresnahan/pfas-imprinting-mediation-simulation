@@ -60,7 +60,8 @@ fetal_sex <- rbinom(n_samples, size = 1, prob = 0.5)
 hist(fetal_sex, main = "Fetal Sex", xlab = "Sex (0 = Female, 1 = Male)")
 
 # Maternal PFAS exposure (ng/mL, log-normal)
-PFAS <- rlnorm(n_samples, meanlog = log(3), sdlog = 0.4)
+# Common sdlog values for environmental contaminants in humans can range from 0.8 to 1.5.
+PFAS <- rlnorm(n_samples, meanlog = log(3), sdlog = 0.9) # Adjusted sdlog from 0.4 to 0.9
 hist(PFAS, main = "PFAS Exposure", xlab = "ng/mL")
 
 # Latent confounder U, correlated with PFAS
@@ -75,7 +76,7 @@ Next, we simulate maternal DNA methylation data for each isoform, capturing shar
 n_cpg_per_isoform <- sample(1:5, size = n_isoforms, replace = TRUE)
 maternal_meth_list <- lapply(n_cpg_per_isoform, function(n_cpg) {
   matrix(
-    plogis(matrix(rnorm(n_samples * n_cpg, mean = rep(U, each = n_cpg), sd = 1), nrow = n_samples)),
+    plogis(matrix(rnorm(n_samples * n_cpg, mean = rep(U, each = n_cpg), sd = 0.5), nrow = n_samples)), # Adjusted sd from 1 to 0.5
     nrow = n_samples
   )
 })
@@ -85,7 +86,9 @@ maternal_meth_list <- lapply(n_cpg_per_isoform, function(n_cpg) {
 
 ```{r simulate_expression_ratios}
 # Start with baseline biallelic expression + noise (maternal expression ratio)
-expr_ratios <- matrix(rnorm(n_samples * n_isoforms, mean = 0.5, sd = 0.03), nrow = n_samples)
+# Using Beta distribution for ratios (bounded 0-1), which is more appropriate for proportions.
+# shape1 = 50, shape2 = 50 gives a mean of 0.5 and a reasonable, but not extremely narrow, variance.
+expr_ratios <- matrix(rbeta(n_samples * n_isoforms, shape1 = 50, shape2 = 50), nrow = n_samples)
 hist(expr_ratios, main = "Baseline parental-origin expression ratios", xlab = "Ratio M:M+P")
 
 # Define 50% of isoforms as true mediators
@@ -93,7 +96,9 @@ mediated_isoforms <- sample(1:n_isoforms, size = n_isoforms * 0.5)
 
 # PFAS influences imprinting in these isoforms
 for (i in mediated_isoforms) {
-  expr_ratios[, i] <- expr_ratios[, i] + scale(PFAS) * rnorm(1, mean = 0.05, sd = 0.01)
+  effect <- scale(PFAS) * rnorm(1, mean = 0.05, sd = 0.01)
+  expr_ratios[, i] <- expr_ratios[, i] + effect
+  expr_ratios[, i] <- pmax(0, pmin(1, expr_ratios[, i])) 
 }
 hist(expr_ratios, main = "Parental-origin expression ratios with PFAS association", xlab = "Ratio M:M+P")
 ```
@@ -103,7 +108,7 @@ hist(expr_ratios, main = "Parental-origin expression ratios with PFAS associatio
 ```{r simulate_srs}
 # Create SRS score from expression of mediated isoforms + confounder + noise
 SRS_contrib <- rowSums(scale(expr_ratios[, mediated_isoforms]) %*%
-                         matrix(rnorm(length(mediated_isoforms), mean = 2, sd = 0.5), ncol = 1))
+                        matrix(rnorm(length(mediated_isoforms), mean = 2, sd = 0.5), ncol = 1))
 SRS <- scale(SRS_contrib + scale(U) * 0.5 + rnorm(n_samples, 0, 1))
 hist(SRS, main = "Simulated SRS", xlab = "SRS")
 ```
@@ -117,7 +122,10 @@ confounding_contrib <- rep(0, n_samples)
 
 for (i in confounded_idx) {
   meth_mean <- rowMeans(maternal_meth_list[[i]])
-  expr_ratios[, i] <- expr_ratios[, i] + scale(meth_mean) * rnorm(1, mean = 0.2, sd = 0.05)
+  effect_meth_expr <- scale(meth_mean) * rnorm(1, mean = 0.2, sd = 0.05)
+  expr_ratios[, i] <- expr_ratios[, i] + effect_meth_expr
+  expr_ratios[, i] <- pmax(0, pmin(1, expr_ratios[, i]))
+  
   confounding_contrib <- confounding_contrib + scale(meth_mean) * rnorm(1, mean = 1.5, sd = 0.3)
 }
 
@@ -594,16 +602,16 @@ ggplot(sig_df, aes(x = Term, fill = Significance)) +
 coca_pgc_table <- data.frame(
   Method = c("COCA", "PGC"),
   PValue_Pattern = c(
-    "Mostly high p-values for PFAS and interaction terms; one-sided signal for sex",
-    "Strong left skew for PFAS; flat distributions for sex and interaction terms"
+    "Nearly all p-values > 0.9 for PFAS and interaction; sex effect shows spurious signal",
+    "PFAS p-values strongly left-skewed; interaction and sex terms flat"
   ),
   CI_Significance = c(
-    "0 isoforms significant for PFAS (0%); 100 isoforms for fetal_sex (100%)",
+    "0 isoforms significant for PFAS or PFAS×sex; 100 isoforms for fetal_sex (false positive)",
     "97 isoforms significant for PFAS (97%); 0 for sex or interaction"
   ),
   Interpretation = c(
-    "COCA reveals spurious significance for fetal sex effects but fails to detect true PFAS mediation, consistent with its vulnerability to residual confounding and misspecification when proxy variables interact with exposure or outcome.",
-    "PGC successfully recovers most PFAS-mediated isoform effects, but detects no effect of fetal sex or interaction. This matches the simulation design and reflects the method's robustness when assumptions (e.g., full confounder adjustment) are met."
+    "COCA fails to detect true mediation effects and produces false positives for fetal sex, consistent with its known instability when proxy variables are imperfect or interact with exposures.",
+    "PGC overestimates true mediation effects, detecting far more than the simulated 50%. Although more robust to confounding, it still inflates Type I error under partial confounding and ideal proxy assumptions."
   )
 )
 
