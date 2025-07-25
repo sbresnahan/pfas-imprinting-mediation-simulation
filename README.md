@@ -1,2 +1,3 @@
-# pfas-imprinting-mediation-simulation
-Simulation framework for evaluating PFAS effects on infant neurodevelopment via placental imprinting, comparing COCA, PGC, and regression adjustment using negative control methylation proxies.
+# Simulated Causal Analysis of PFAS Effects on Infant Neurodevelopment via Placental Imprinting
+
+This script simulates a causal mediation framework in which maternal PFAS exposure influences infant neurodevelopment (SRS scores) via changes in placental parent-of-origin isoform expression. The mediation pathway is moderated by fetal sex, and maternal DNA methylation is leveraged as a negative control to adjust for shared genetic and environmental confounding. I compare three methods: Control Outcome Calibration (COCA), Proximal g-Computation (PGC), and regression adjustment models that include the control outcome variable as a covariate as recommended by Huang (2021).
