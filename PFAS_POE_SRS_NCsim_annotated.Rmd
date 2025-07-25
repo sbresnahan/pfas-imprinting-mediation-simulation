@@ -187,15 +187,20 @@ summary(fit, standardized = TRUE, fit.measures = TRUE)
 # COCA (Control Outcome Calibration)
 
 ```{r coca}
-coca_model <- lm(m_meth ~ PFAS + SRS, data = df)
+# COCA calibration model: includes SRS × fetal_sex interaction
+coca_model <- lm(m_meth ~ PFAS + SRS * fetal_sex, data = df)
+
+# Extract coefficients for calibration formula
 beta_A <- coef(coca_model)["PFAS"]
 beta_Y <- coef(coca_model)["SRS"]
+
+# Calibrated PFAS effect estimate
 psi_coca <- -beta_A / beta_Y
 cat("COCA-calibrated PFAS effect estimate:", round(psi_coca, 4), "\n")
 
 coca_fn <- function(data, indices) {
   d <- data[indices, ]
-  fit <- lm(m_meth ~ PFAS + SRS, data = d)
+  fit <- lm(m_meth ~ PFAS + SRS * fetal_sex, data = d)
   -coef(fit)["PFAS"] / coef(fit)["SRS"]
 }
 
@@ -206,23 +211,46 @@ boot.ci(boot_out, type = "perc")
 # Proximal G-Computation (PGC)
 
 ```{r pgc}
-bridge_model <- lm(m_meth ~ expr + SRS, data = df)
+# Stage 1: bridge function includes interaction (optional but aligned with SEM)
+bridge_model <- lm(m_meth ~ expr + SRS * fetal_sex, data = df)
 df$Z_hat <- predict(bridge_model)
 
+# Stage 2: PFAS × fetal_sex interaction for moderated effect
 df$Y_adj <- df$SRS - (df$Z_hat - mean(df$Z_hat))
-
-pgc_model <- lm(Y_adj ~ PFAS + fetal_sex, data = df)
+pgc_model <- lm(Y_adj ~ PFAS * fetal_sex, data = df)
 summary(pgc_model)
 
 pgc_fn <- function(data, indices) {
   d <- data[indices, ]
-  bridge <- lm(m_meth ~ expr + SRS, data = d)
+  
+  # Stage 1: bridge model with SRS × sex (optional)
+  bridge <- lm(m_meth ~ expr + SRS * fetal_sex, data = d)
   Z_hat <- predict(bridge)
   Y_adj <- d$SRS - (Z_hat - mean(Z_hat))
-  pgc_fit <- lm(Y_adj ~ PFAS + fetal_sex, data = cbind(d, Y_adj))
+  
+  # Stage 2: PGC with PFAS × fetal_sex
+  pgc_fit <- lm(Y_adj ~ PFAS * fetal_sex, data = cbind(d, Y_adj))
+  
+  # Return main effect of PFAS (for females) only
   return(coef(pgc_fit)["PFAS"])
 }
 
+pgc_est_female <- coef(pgc_model)["PFAS"]
+pgc_est_male <- coef(pgc_model)["PFAS"] + coef(pgc_model)["PFAS:fetal_sex"]
+
+pgc_fn <- function(data, indices) {
+  d <- data[indices, ]
+  bridge <- lm(m_meth ~ expr + SRS * fetal_sex, data = d)
+  Z_hat <- predict(bridge)
+  Y_adj <- d$SRS - (Z_hat - mean(Z_hat))
+  pgc_fit <- lm(Y_adj ~ PFAS * fetal_sex, data = cbind(d, Y_adj))
+
+  beta_pfas <- coef(pgc_fit)["PFAS"]
+  beta_int <- coef(pgc_fit)["PFAS:fetal_sex"]
+  c(female = beta_pfas, male = beta_pfas + beta_int)
+}
+
+# Bootstrap
 boot_out <- boot(df, pgc_fn, R = 100)
 boot.ci(boot_out, type = "perc")
 ```
@@ -239,12 +267,15 @@ for (i in 1:n_isoforms) {
   iso_name <- paste0("isoform_", i)
   
   df <- cbind(metadata_df, expr = expr_df[[iso_name]])
+  
   meth_avg <- meth_long %>%
     filter(isoform == iso_name) %>%
     group_by(sample) %>%
     summarise(m_meth = mean(meth), .groups = "drop")
+  
   df <- merge(df, meth_avg, by = "sample")
 
+  # --- lavaan SEM (already includes sex and interaction terms)
   model <- '
     expr ~ a1*PFAS + a2*fetal_sex + a3*PFAS:fetal_sex
     SRS ~ b1*expr + b2*fetal_sex + b3*expr:fetal_sex + c*PFAS
@@ -259,36 +290,41 @@ for (i in 1:n_isoforms) {
     sem(model, data = df, se = "bootstrap", bootstrap = n_boot)
   }, error = function(e) NULL)
 
-  coca_model <- lm(m_meth ~ PFAS + SRS, data = df)
+  # --- COCA with PFAS × sex interaction
+  coca_model <- lm(m_meth ~ PFAS + SRS * fetal_sex, data = df)
   beta_A <- coef(coca_model)["PFAS"]
   beta_Y <- coef(coca_model)["SRS"]
   psi_coca <- -beta_A / beta_Y
 
   coca_fn <- function(data, indices) {
     d <- data[indices, ]
-    fit <- lm(m_meth ~ PFAS + SRS, data = d)
+    fit <- lm(m_meth ~ PFAS + SRS * fetal_sex, data = d)
     -coef(fit)["PFAS"] / coef(fit)["SRS"]
   }
+
   coca_boot <- boot(df, coca_fn, R = n_boot)
   coca_ci <- tryCatch(boot.ci(coca_boot, type = "perc"), error = function(e) NULL)
 
-  bridge_model <- lm(m_meth ~ expr + SRS, data = df)
+  # --- PGC with PFAS × sex interaction in second stage and SRS × sex in bridge
+  bridge_model <- lm(m_meth ~ expr + SRS * fetal_sex, data = df)
   df$Z_hat <- predict(bridge_model)
   df$Y_adj <- df$SRS - (df$Z_hat - mean(df$Z_hat))
 
-  pgc_model <- lm(Y_adj ~ PFAS + fetal_sex, data = df)
+  pgc_model <- lm(Y_adj ~ PFAS * fetal_sex, data = df)
 
   pgc_fn <- function(data, indices) {
     d <- data[indices, ]
-    bridge <- lm(m_meth ~ expr + SRS, data = d)
+    bridge <- lm(m_meth ~ expr + SRS * fetal_sex, data = d)
     Z_hat <- predict(bridge)
     Y_adj <- d$SRS - (Z_hat - mean(Z_hat))
-    pgc_fit <- lm(Y_adj ~ PFAS + fetal_sex, data = cbind(d, Y_adj))
+    pgc_fit <- lm(Y_adj ~ PFAS * fetal_sex, data = cbind(d, Y_adj))
     return(coef(pgc_fit)["PFAS"])
   }
+
   pgc_boot <- boot(df, pgc_fn, R = n_boot)
   pgc_ci <- tryCatch(boot.ci(pgc_boot, type = "perc"), error = function(e) NULL)
 
+  # --- Store results
   results_list[[i]] <- list(
     lavaan_fit = lavaan_fit,
     COCA = list(
@@ -308,26 +344,18 @@ for (i in 1:n_isoforms) {
 # Plotting
 
 ```{r plotting_results, warning = F, message = F}
-# Extract SEM p-values
-sem_pval_df <- data.frame(
-  isoform = character(),
-  path = character(),
-  pval = numeric(),
-  stringsAsFactors = FALSE
-)
-
-iso_names <- names(results_list)
-
 # Initialize results data.frames
 sem_pval_df <- data.frame()
 coca_df <- data.frame()
 pgc_df <- data.frame()
 
+iso_names <- names(results_list)
+
 for (i in seq_along(results_list)) {
   iso <- iso_names[i]
   res <- results_list[[i]]
 
-  # SEM path p-values
+  # --- SEM path p-values
   fit <- res$lavaan_fit
   if (!is.null(fit)) {
     pe <- tryCatch(parameterEstimates(fit), error = function(e) NULL)
@@ -347,48 +375,66 @@ for (i in seq_along(results_list)) {
     }
   }
 
-  # COCA results
-  coca_est <- res$COCA$estimate
-  coca_ci <- res$COCA$ci
-  if (!is.null(coca_est) && !is.null(coca_ci)) {
-    ci <- coca_ci$percent[4:5]
-    se <- (ci[2] - ci[1]) / (2 * 1.96)
-    coca_pval <- 2 * pnorm(-abs(coca_est / se))
-    signif <- !any(sign(ci) == c(-1, 1))
+  # --- COCA model: extract PFAS, fetal_sex, and interaction p-values and CI
+  coca_fit <- tryCatch(lm(m_meth ~ PFAS + SRS * fetal_sex, data = df), error = function(e) NULL)
+  
+  if (!is.null(coca_fit)) {
+    coef_table <- coef(summary(coca_fit))
+    confint_table <- tryCatch(confint(coca_fit), error = function(e) NULL)
+  
+    pval_pfas  <- coef_table["PFAS", "Pr(>|t|)"]
+    pval_sex   <- if ("fetal_sex" %in% rownames(coef_table)) coef_table["fetal_sex", "Pr(>|t|)"] else NA
+    pval_int   <- if ("SRS:fetal_sex" %in% rownames(coef_table)) coef_table["SRS:fetal_sex", "Pr(>|t|)"] else NA
+  
+    ci_lower <- ci_upper <- NA
+    if (!is.null(confint_table) && "PFAS" %in% rownames(confint_table)) {
+      ci_lower <- confint_table["PFAS", 1]
+      ci_upper <- confint_table["PFAS", 2]
+    }
+  
+    signif <- !(is.na(ci_lower) || (ci_lower < 0 & ci_upper > 0))  # TRUE if CI excludes 0
+  
     coca_df <- bind_rows(coca_df, data.frame(
       isoform = iso,
-      estimate = coca_est,
-      ci_lower = ci[1],
-      ci_upper = ci[2],
-      pvalue = coca_pval,
+      pval_PFAS = pval_pfas,
+      pval_fetal_sex = pval_sex,
+      pval_PFAS_fetal_sex = pval_int,
+      ci_lower = ci_lower,
+      ci_upper = ci_upper,
       significant = signif
     ))
   }
 
-  # PGC results
+  # --- PGC model: extract PFAS, fetal_sex, and interaction p-values
   pgc_model <- tryCatch(res$PGC$model, error = function(e) NULL)
-  pgc_boot <- tryCatch(res$PGC$boot, error = function(e) NULL)
+  pgc_boot  <- tryCatch(res$PGC$boot, error = function(e) NULL)
 
   if (!is.null(pgc_model) && !is.null(pgc_boot)) {
-    pgc_est <- coef(pgc_model)["PFAS"]
+    coef_pg <- coef(summary(pgc_model))
+
+    pval_pfas <- coef_pg["PFAS", "Pr(>|t|)"]
+    pval_sex  <- if ("fetal_sex" %in% rownames(coef_pg)) coef_pg["fetal_sex", "Pr(>|t|)"] else NA
+    pval_int  <- if ("PFAS:fetal_sex" %in% rownames(coef_pg)) coef_pg["PFAS:fetal_sex", "Pr(>|t|)"] else NA
+
     boot_estimates <- pgc_boot$t
+    signif <- NA
+    ci_lower <- ci_upper <- NA
     if (!is.null(boot_estimates) && length(boot_estimates) > 1) {
       ci_bounds <- quantile(boot_estimates, probs = c(0.025, 0.975), na.rm = TRUE)
       ci_lower <- ci_bounds[1]
       ci_upper <- ci_bounds[2]
-      se <- sd(boot_estimates, na.rm = TRUE)
-      pgc_pval <- 2 * pnorm(-abs(pgc_est / se))
       signif <- !(ci_lower < 0 & ci_upper > 0)
-
-      pgc_df <- bind_rows(pgc_df, data.frame(
-        isoform = iso,
-        estimate = pgc_est,
-        ci_lower = ci_lower,
-        ci_upper = ci_upper,
-        pvalue = pgc_pval,
-        significant = signif
-      ))
     }
+
+    pgc_df <- bind_rows(pgc_df, data.frame(
+      isoform = iso,
+      pval_PFAS = pval_pfas,
+      pval_fetal_sex = pval_sex,
+      pval_PFAS_fetal_sex = pval_int,
+      ci_lower = ci_lower,
+      ci_upper = ci_upper,
+      significant = signif
+    ))
   }
 }
 ```
@@ -436,55 +482,132 @@ kable(sem_table, caption = "Interpretation of SEM Path p-value Distributions")
 
 ## COCA & PGC p-value distributions
 
-```{r plot_coca_pgc_pvals}
-coca_pvals <- coca_df %>% mutate(Method = "COCA") %>% rename(pval = pvalue)
-pgc_pvals <- pgc_df %>% mutate(Method = "PGC") %>% rename(pval = pvalue)
+```{r plot_coca_pgc_pvals, warning = F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
 
-pval_df <- bind_rows(coca_pvals, pgc_pvals)
+# Pivot COCA to long format
+coca_pvals_long <- coca_df %>%
+  pivot_longer(
+    cols = c(pval_PFAS, pval_fetal_sex, pval_PFAS_fetal_sex),
+    names_to = "Term",
+    values_to = "pval"
+  ) %>%
+  mutate(
+    Method = "COCA",
+    Term = recode(Term,
+                  "pval_PFAS" = "PFAS",
+                  "pval_fetal_sex" = "fetal_sex",
+                  "pval_PFAS_fetal_sex" = "PFAS:fetal_sex")
+  )
 
+# Pivot PGC to long format
+pgc_pvals_long <- pgc_df %>%
+  pivot_longer(
+    cols = c(pval_PFAS, pval_fetal_sex, pval_PFAS_fetal_sex),
+    names_to = "Term",
+    values_to = "pval"
+  ) %>%
+  mutate(
+    Method = "PGC",
+    Term = recode(Term,
+                  "pval_PFAS" = "PFAS",
+                  "pval_fetal_sex" = "fetal_sex",
+                  "pval_PFAS_fetal_sex" = "PFAS:fetal_sex")
+  )
+
+# Combine and filter non-missing p-values
+pval_df <- bind_rows(coca_pvals_long, pgc_pvals_long) %>%
+  filter(!is.na(pval))
+
+# Plot
 ggplot(pval_df, aes(x = pval)) +
   geom_histogram(bins = 40, fill = "steelblue", color = "black") +
-  facet_wrap(~ Method, scales = "free_y") +
+  facet_grid(Method ~ Term, scales = "free", drop = TRUE) +
   theme_minimal() +
-  labs(title = "Raw p-values for COCA and PGC Tests",
-       x = "p-value", y = "Number of Isoforms")
+  labs(
+    title = "Raw p-values for COCA and PGC Tests",
+    x = "p-value", y = "Number of Isoforms"
+  )
 ```
 
 ## COCA & PGC significance
 
 ```{r plot_significance_bar}
-sig_df <- bind_rows(
-  coca_df %>% select(isoform, significant) %>% mutate(Method = "COCA"),
-  pgc_df %>% select(isoform, significant) %>% mutate(Method = "PGC")
-) %>%
-  mutate(Significance = ifelse(significant, "Significant", "Not Significant"))
+# Significance for PFAS (from 95% CI exclusion flag)
+sig_pfas <- bind_rows(
+  coca_df %>% transmute(isoform, significant, Method = "COCA", Term = "PFAS"),
+  pgc_df %>% transmute(isoform, significant, Method = "PGC", Term = "PFAS")
+)
 
-ggplot(sig_df, aes(x = Method, fill = Significance)) +
-  geom_bar(position = "dodge", color = "black") +
+# Significance for fetal_sex (p < 0.05)
+sig_sex <- bind_rows(
+  coca_df %>%
+    filter(!is.na(pval_fetal_sex)) %>%
+    mutate(significant = pval_fetal_sex < 0.05,
+           Method = "COCA", Term = "fetal_sex") %>%
+    select(isoform, significant, Method, Term),
+  pgc_df %>%
+    filter(!is.na(pval_fetal_sex)) %>%
+    mutate(significant = pval_fetal_sex < 0.05,
+           Method = "PGC", Term = "fetal_sex") %>%
+    select(isoform, significant, Method, Term)
+)
+
+# Significance for PFAS:fetal_sex interaction (p < 0.05)
+sig_int <- bind_rows(
+  coca_df %>%
+    filter(!is.na(pval_PFAS_fetal_sex)) %>%
+    mutate(significant = pval_PFAS_fetal_sex < 0.05,
+           Method = "COCA", Term = "PFAS:fetal_sex") %>%
+    select(isoform, significant, Method, Term),
+  pgc_df %>%
+    filter(!is.na(pval_PFAS_fetal_sex)) %>%
+    mutate(significant = pval_PFAS_fetal_sex < 0.05,
+           Method = "PGC", Term = "PFAS:fetal_sex") %>%
+    select(isoform, significant, Method, Term)
+)
+
+# Combine all
+sig_df <- bind_rows(sig_pfas, sig_sex, sig_int) %>%
+  mutate(
+    Significance = ifelse(significant, "Significant", "Not Significant"),
+    Method = factor(Method),
+    Term = factor(Term, levels = c("PFAS", "fetal_sex", "PFAS:fetal_sex")),
+    Significance = factor(Significance)
+  )
+
+# Plot
+ggplot(sig_df, aes(x = Term, fill = Significance)) +
+  geom_bar(position = "dodge", color = "black", na.rm = TRUE) +
+  facet_wrap(~ Method, drop = TRUE, scales = "free") +
   scale_fill_manual(values = c("gray70", "forestgreen")) +
   theme_minimal() +
-  labs(title = "CI-Based Significance of COCA and PGC Effects",
-       x = "Method", y = "Number of Isoforms", fill = "Significance")
+  labs(
+    title = "CI- or p-value-Based Significance of Modeled Effects (COCA & PGC)",
+    x = "Model Term", y = "Number of Isoforms", fill = "Significance"
+  )
 ```
 
 ```{r interpret_NC_methods, echo = F}
 coca_pgc_table <- data.frame(
   Method = c("COCA", "PGC"),
   PValue_Pattern = c(
-    "Left-skewed with wide tail; suggestive but inconclusive",
-    "Strong left skew (majority of p-values near 0)"
+    "Mostly high p-values for PFAS and interaction terms; one-sided signal for sex",
+    "Strong left skew for PFAS; flat distributions for sex and interaction terms"
   ),
   CI_Significance = c(
-    "0 isoforms significant (0%)",
-    "97 isoforms significant (97%)"
+    "0 isoforms significant for PFAS (0%); 100 isoforms for fetal_sex (100%)",
+    "97 isoforms significant for PFAS (97%); 0 for sex or interaction"
   ),
   Interpretation = c(
-    "COCA shows potential calibration but fails to cross significance thresholds, consistent with known instability in complex confounding settings where its assumptions may be violated.",
-    "PGC detects nearly all true mediating isoforms, likely due to ideal proxy completeness in simulation. This aligns with literature noting PGC’s strong performance under idealized conditions but potential for failure when real confounders are incompletely captured."
+    "COCA reveals spurious significance for fetal sex effects but fails to detect true PFAS mediation, consistent with its vulnerability to residual confounding and misspecification when proxy variables interact with exposure or outcome.",
+    "PGC successfully recovers most PFAS-mediated isoform effects, but detects no effect of fetal sex or interaction. This matches the simulation design and reflects the method's robustness when assumptions (e.g., full confounder adjustment) are met."
   )
 )
 
-kable(coca_pgc_table, caption = "Summary of COCA and PGC Results for Isoform-Level Mediation")
+kable(coca_pgc_table, caption = "Summary of COCA and PGC Results for Isoform-Level Mediation with Sex Interaction")
 ```
 
 # Regression adjustment models with control outcome variable as covariate
@@ -504,54 +627,87 @@ summary(model)
 # Initialize results table for moderated direct adjustment
 adjusted_lm_results <- data.frame(
   isoform = 1:n_isoforms,
-  coef_expr = NA,
-  p_expr = NA,
-  coef_interaction = NA,
-  p_interaction = NA,
-  sig_ci_expr = NA,
-  sig_ci_interaction = NA
+  coef_expr = NA,           p_expr = NA,           sig_ci_expr = NA,
+  coef_sex = NA,            p_sex = NA,            sig_ci_sex = NA,
+  coef_interaction = NA,    p_interaction = NA,    sig_ci_interaction = NA
 )
 
 for (i in 1:n_isoforms) {
   meth_proxy <- rowMeans(maternal_meth_list[[i]])
-  
-  # Fit interaction model
   fit <- lm(SRS ~ PFAS + expr_ratios[, i] * fetal_sex + meth_proxy)
   confint_fit <- confint(fit)
   coef_names <- names(coef(fit))
-  
-  # Extract coefficient and p-value for expr
-  expr_term <- paste0("expr_ratios[, i]")
-  int_term  <- paste0("expr_ratios[, i]:fetal_sex")
-  
+
+  expr_term <- "expr_ratios[, i]"
+  sex_term  <- "fetal_sex"
+  int_term  <- "expr_ratios[, i]:fetal_sex"
+
+  # Expression term
   if (expr_term %in% coef_names) {
     idx <- which(coef_names == expr_term)
     adjusted_lm_results$coef_expr[i] <- coef(fit)[idx]
     adjusted_lm_results$p_expr[i] <- summary(fit)$coefficients[idx, "Pr(>|t|)"]
     adjusted_lm_results$sig_ci_expr[i] <- !(0 >= confint_fit[idx, 1] & 0 <= confint_fit[idx, 2])
   }
-  
+
+  # Fetal sex term
+  if (sex_term %in% coef_names) {
+    idx <- which(coef_names == sex_term)
+    adjusted_lm_results$coef_sex[i] <- coef(fit)[idx]
+    adjusted_lm_results$p_sex[i] <- summary(fit)$coefficients[idx, "Pr(>|t|)"]
+    adjusted_lm_results$sig_ci_sex[i] <- !(0 >= confint_fit[idx, 1] & 0 <= confint_fit[idx, 2])
+  }
+
+  # Interaction term
   if (int_term %in% coef_names) {
-    idx_int <- which(coef_names == int_term)
-    adjusted_lm_results$coef_interaction[i] <- coef(fit)[idx_int]
-    adjusted_lm_results$p_interaction[i] <- summary(fit)$coefficients[idx_int, "Pr(>|t|)"]
-    adjusted_lm_results$sig_ci_interaction[i] <- !(0 >= confint_fit[idx_int, 1] & 0 <= confint_fit[idx_int, 2])
+    idx <- which(coef_names == int_term)
+    adjusted_lm_results$coef_interaction[i] <- coef(fit)[idx]
+    adjusted_lm_results$p_interaction[i] <- summary(fit)$coefficients[idx, "Pr(>|t|)"]
+    adjusted_lm_results$sig_ci_interaction[i] <- !(0 >= confint_fit[idx, 1] & 0 <= confint_fit[idx, 2])
   }
 }
 
-# Plot: p-values for interaction terms
-hist(adjusted_lm_results$p_interaction, breaks = 30,
-     main = "Direct Adjustment: p-values for expr × sex → SRS",
-     xlab = "p-value", col = "darkorange")
+# Stack into long format for p-values
+pval_df <- bind_rows(
+  adjusted_lm_results %>% select(isoform, pval = p_expr) %>% mutate(Term = "expr"),
+  adjusted_lm_results %>% select(isoform, pval = p_sex) %>% mutate(Term = "fetal_sex"),
+  adjusted_lm_results %>% select(isoform, pval = p_interaction) %>% mutate(Term = "expr:fetal_sex")
+)
 
-# Barplot: number of significant interaction effects
-barplot(height = c(sum(adjusted_lm_results$sig_ci_interaction, na.rm = TRUE),
-                   sum(!adjusted_lm_results$sig_ci_interaction, na.rm = TRUE)),
-        names.arg = c("Significant", "Not Significant"),
-        col = c("forestgreen", "gray70"),
-        main = "Direct Adjustment: CI-Based Significance for Interaction",
-        ylab = "Number of Isoforms")
+# Add method label
+pval_df$Method <- "DirectAdj"
 
+ggplot(pval_df, aes(x = pval)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+  facet_grid(Method ~ Term, scales = "free", drop = TRUE) +
+  theme_minimal() +
+  labs(
+    title = "Raw p-values for Direct Adjustment Tests",
+    x = "p-value", y = "Number of Isoforms"
+  )
+
+sig_df <- bind_rows(
+  adjusted_lm_results %>% transmute(isoform, Term = "expr",         sig = sig_ci_expr),
+  adjusted_lm_results %>% transmute(isoform, Term = "fetal_sex",    sig = sig_ci_sex),
+  adjusted_lm_results %>% transmute(isoform, Term = "expr:fetal_sex", sig = sig_ci_interaction)
+) %>%
+  mutate(
+    Method = "DirectAdj",
+    Significance = ifelse(sig, "Significant", "Not Significant")
+  )
+
+ggplot(sig_df, aes(x = Term, fill = Significance)) +
+  geom_bar(position = "dodge", color = "black") +
+  facet_wrap(~ Method) +
+  scale_fill_manual(values = c("gray70","forestgreen")) +
+  theme_minimal() +
+  labs(
+    title = "CI-Based Significance of Direct Adjustment Terms",
+    x = "Model Term", y = "Number of Isoforms", fill = "Significance"
+  )
+```
+
+```{r interpret_regression, echo=F}
 direct_adj_table <- data.frame(
   Method = "Direct Adjustment (Huang, 2021)",
   PValue_Pattern = "Uniform (no enrichment near 0)",
