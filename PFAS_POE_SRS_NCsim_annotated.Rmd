@@ -213,6 +213,7 @@ summary(fit, standardized = TRUE, fit.measures = TRUE)
 ```{r coca}
 # COCA calibration model: includes SRS * fetal_sex interaction
 coca_model <- lm(m_meth ~ PFAS + SRS * fetal_sex, data = df)
+summary(coca_model)
 
 # Extract coefficients for calibration formula
 beta_A <- coef(coca_model)["PFAS"]
@@ -298,7 +299,7 @@ results_list <- foreach(i = 1:n_isoforms, .packages = c("dplyr", "lavaan", "boot
   iso_name <- isoform_names[i]
   
   df <- cbind(metadata_df, expr = expr_df[[iso_name]])
-
+  
   meth_avg <- meth_long %>%
     filter(isoform == iso_name) %>%
     group_by(sample) %>%
@@ -359,7 +360,7 @@ results_list <- foreach(i = 1:n_isoforms, .packages = c("dplyr", "lavaan", "boot
   list(
     lavaan_fit = lavaan_fit,
     COCA = list(
-      estimate = psi_coca,
+      model = coca_model,
       boot = coca_boot,
       ci = coca_ci
     ),
@@ -381,7 +382,7 @@ stopCluster(cl)
 save(list=c("results_list"),file="results_list.RData")
 ```
 
-```{r,echo=F,message=F,warning=F}
+```{r,echo=F,warning=F,message=F}
 load("results_list.RData")
 ```
 
@@ -420,7 +421,7 @@ for (i in seq_along(results_list)) {
   }
 
   # --- COCA model: extract PFAS, fetal_sex, and interaction p-values and CI
-  coca_fit <- tryCatch(lm(m_meth ~ PFAS + SRS * fetal_sex, data = df), error = function(e) NULL)
+  coca_fit <- results_list[[i]][["COCA"]][["model"]]
   
   if (!is.null(coca_fit)) {
     coef_table <- coef(summary(coca_fit))
@@ -499,12 +500,12 @@ sem_table <- data.frame(
   Path = c("a1", "a3", "b1", "b3", "c", "ind_female", "ind_male", "total_female", "total_male"),
   Pattern = c(
     "Left skew with peak near 0",
-    "Slight right skew",
+    "Roughly uniform",
     "Strong left skew with high peak at 0",
     "Roughly uniform",
-    "Extreme left skew (nearly all p < 0.05)",
+    "Left skew (many < 0.05)",
     "Right skew (most p > 0.5)",
-    "Right skew (strongest around 1.0)",
+    "Right skew (most p > 0.5)",
     "Extreme left skew (strong signal)",
     "Extreme left skew (strong signal)"
   ),
@@ -513,9 +514,9 @@ sem_table <- data.frame(
     "Fetal sex moderates the PFAS-expression path only in some isoforms; no strong overall signal.",
     "Imprinting disruption is strongly associated with SRS across isoforms.",
     "No consistent interaction between sex and expression on SRS.",
-    "PFAS has a direct effect on SRS in nearly all isoforms, suggesting true mediation.",
+    "PFAS has a direct effect on SRS in many isoforms.",
     "Female-specific indirect effects are weak or absent across most isoforms.",
-    "Male-specific mediation effects appear sparse and mostly non-significant.",
+    "Male-specific mediation effects are weak or absent across most isoforms.",
     "PFAS has strong total effects on SRS in females for many isoforms.",
     "PFAS has strong total effects on SRS in males for many isoforms."
   )
@@ -638,16 +639,16 @@ ggplot(sig_df, aes(x = Term, fill = Significance)) +
 coca_pgc_table <- data.frame(
   Method = c("COCA", "PGC"),
   PValue_Pattern = c(
-    "All p-values near zero for PFAS, sex, and interaction — suggesting inflated Type I error",
-    "PFAS p-values are modestly left-skewed; sex and interaction terms are strongly right-skewed"
+    "PFAS p-values sharply left-skewed; uniform for sex and interaction terms",
+    "PFAS p-values show strong left skew; sex and interaction terms strongly right-skewed"
   ),
   CI_Significance = c(
-    "100% of isoforms significant for PFAS; 0% for sex or interaction",
-    "~10% of isoforms significant for PFAS; 0% for sex or interaction"
+    "Approximately 60% of isoforms significant for PFAS; ~1% for sex and interaction",
+    "Fewer than 10% of isoforms significant for PFAS; virtually none for sex or interaction"
   ),
   Interpretation = c(
-    "COCA falsely detects PFAS effects for all isoforms, revealing extreme susceptibility to residual confounding and misspecification.",
-    "PGC partially detects true PFAS mediation but still inflates effect detection under simulated confounding; improves specificity for sex and interaction terms."
+    "COCA detects PFAS effects in the majority of isoforms despite correction, suggesting persistent confounding influence via m_meth and limited control for indirect bias.",
+    "PGC shows tighter control of Type I error, but still overestimates PFAS effects under confounding; effectively suppresses false positives for sex and interaction terms."
   )
 )
 
@@ -861,16 +862,16 @@ kable(combined_type1_errors,
 
 ##### SEM
 
-SEM moderately inflates Type I error for the individual path coefficients suggesting over-sensitivity to noise in component paths of the mediation model under the null. However, the Type I error for the indirect effects (0.08 for females and 0.06 for males) is much closer to nominal levels, indicating that the bootstrapped product-term approach provides some protection against false positives for mediated effects, even when component paths are overestimated.
+SEM shows moderate inflation of Type I error for the individual path coefficients: 0.127 for PFAS -> expression (a1) and 0.259 for expression -> SRS (b1). This indicates over-sensitivity in estimating direct paths under the null. In contrast, the indirect effects remain better controlled — 0.051 for females and 0.022 for males — suggesting that the bootstrapped product-of-coefficients approach is more robust, particularly for the male pathway. Overall, while SEM struggles with inflated error at the path level, it offers reasonably controlled Type I error for total mediation effects.
 
 ##### COCA
 
-COCA displays severe inflation of Type I error for the PFAS main effect (1.00), despite being under a null simulation, implying a total failure to control false positives. The fact that fetal sex and interaction terms remain controlled (0.00) underscores that the bias is specific to PFAS and likely arises from residual confounding in the unadjusted PFAS -> methylation path. This confirms the method’s vulnerability in the presence of latent confounders.
+COCA yields a highly inflated Type I error for the PFAS main effect (0.562), indicating substantial bias even under null simulation. This reinforces concerns that COCA’s calibration may fail when residual confounding (e.g., via methylation) is strong and unmeasured. However, the fetal sex and interaction terms remain well controlled (0.022 and 0.017, respectively), confirming that the inflation is specific to the PFAS term, likely due to uncorrected bias in the PFAS -> methylation -> SRS pathway. This highlights COCA’s vulnerability to latent confounders, especially when the primary exposure is entangled with the mediator’s confounders.
 
 ##### PGC
 
-PGC substantially inflates Type I error for the PFAS effect (0.83), though not as dramatically as COCA. The sex and interaction terms remain well-controlled (0.00), suggesting that PGC’s use of expression as a proxy partially mitigates bias but does not eliminate it. The high PFAS false positive rate indicates that under partial confounding, even bridge-variable strategies can produce misleading results unless the proxy is very strong and correctly specified.
+PGC produces moderate inflation for the PFAS effect (0.076), but maintains perfect control for the fetal sex and interaction terms (both 0.000). This suggests that PGC partially mitigates PFAS-related confounding via proxy variables (expression), but not completely — especially when the proxy does not fully capture the true exposure–mediator relationship. While more conservative than COCA, PGC still exhibits nontrivial false positive rates and may require stronger or better-calibrated proxies to perform reliably under the null.
 
 ##### Direct Adjustment
 
-Direct adjustment (e.g., SRS ~ expression + sex + interaction) provides the most reliable Type I error control among all methods. The error rates for expression (0.08), sex (0.02), and interaction (0.02) remain close to or below nominal levels, indicating conservative performance. While this method doesn't model mediation explicitly, it performs robustly under the null and may serve as a useful baseline in exploratory or confirmatory settings.
+The direct adjustment method (SRS ~ expression + sex + interaction) shows excellent Type I error control across all tested paths.
