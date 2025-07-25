@@ -2223,8 +2223,8 @@ with Sex Interaction</caption>
 <colgroup>
 <col width="1%" />
 <col width="21%" />
-<col width="22%" />
-<col width="53%" />
+<col width="18%" />
+<col width="58%" />
 </colgroup>
 <thead>
 <tr class="header">
@@ -2237,20 +2237,18 @@ with Sex Interaction</caption>
 <tbody>
 <tr class="odd">
 <td align="left">COCA</td>
-<td align="left">Nearly all p-values &gt; 0.9 for PFAS and interaction;
-sex effect shows spurious signal</td>
-<td align="left">0 isoforms significant for PFAS or PFAS×sex; 100
-isoforms for fetal_sex (false positive)</td>
-<td align="left">COCA fails to detect true mediation effects and
-produces false positives for fetal sex, consistent with its known
-instability when proxy variables are imperfect or interact with
-exposures.</td>
+<td align="left">Nearly all p-values &gt; 0.9 for PFAS, sex and
+interaction show spurious signal</td>
+<td align="left">100% of isoforms significant for PFAS, 0% for sex or
+interaction</td>
+<td align="left">COCA overestimates true mediation effects, detecting
+far more than the simulated 50%.</td>
 </tr>
 <tr class="even">
 <td align="left">PGC</td>
 <td align="left">PFAS p-values strongly left-skewed; interaction and sex
-terms flat</td>
-<td align="left">97 isoforms significant for PFAS (97%); 0 for sex or
+terms right-skewed</td>
+<td align="left">~80% of isoforms significant for PFAS, 0% for sex or
 interaction</td>
 <td align="left">PGC overestimates true mediation effects, detecting far
 more than the simulated 50%. Although more robust to confounding, it

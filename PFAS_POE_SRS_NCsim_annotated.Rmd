@@ -602,15 +602,15 @@ ggplot(sig_df, aes(x = Term, fill = Significance)) +
 coca_pgc_table <- data.frame(
   Method = c("COCA", "PGC"),
   PValue_Pattern = c(
-    "Nearly all p-values > 0.9 for PFAS and interaction; sex effect shows spurious signal",
-    "PFAS p-values strongly left-skewed; interaction and sex terms flat"
+    "Nearly all p-values > 0.9 for PFAS, sex and interaction show spurious signal",
+    "PFAS p-values strongly left-skewed; interaction and sex terms right-skewed"
   ),
   CI_Significance = c(
-    "0 isoforms significant for PFAS or PFAS×sex; 100 isoforms for fetal_sex (false positive)",
-    "97 isoforms significant for PFAS (97%); 0 for sex or interaction"
+    "100% of isoforms significant for PFAS, 0% for sex or interaction",
+    "~80% of isoforms significant for PFAS, 0% for sex or interaction"
   ),
   Interpretation = c(
-    "COCA fails to detect true mediation effects and produces false positives for fetal sex, consistent with its known instability when proxy variables are imperfect or interact with exposures.",
+    "COCA overestimates true mediation effects, detecting far more than the simulated 50%.",
     "PGC overestimates true mediation effects, detecting far more than the simulated 50%. Although more robust to confounding, it still inflates Type I error under partial confounding and ideal proxy assumptions."
   )
 )
